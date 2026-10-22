@@ -75,4 +75,4 @@ Todo en `fx-catalog-service`. Detalle y evidencia en `docs/parte2-resilience4j.m
 ## Housekeeping del repo
 - [x] `enunciado.md` y `docs/` creados
 - [x] Commit y push a `main`
-- [ ] *(opcional)* `chmod +x` a los `mvnw` (en git no tienen permiso de ejecución; hoy hay que usar `sh mvnw`)
+- [x] `chmod +x` a los `mvnw` (ahora `./mvnw` funciona directo)

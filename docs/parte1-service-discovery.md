@@ -153,7 +153,7 @@ Our first course is Spring Boot Fundamentals
    ```
    Funciona porque `RestTemplate` normaliza la URL antes de enviarla. El log de error muestra que la petición real fue a `http://172.30.200.9:8001/courses`, con una sola barra. No se modificó el código, pero es un detalle a mencionar.
 
-3. **`mvnw` no tiene permiso de ejecución en git (modo 100644).** `./mvnw` falla con `permission denied`. Hay que usar `sh mvnw spring-boot:run`, o `chmod +x mvnw`.
+3. **`mvnw` no tenía permiso de ejecución en git (modo 100644).** `./mvnw` fallaba con `permission denied`. Se corrigió (modo 100755), así que ahora `./mvnw spring-boot:run` funciona directo; `sh mvnw ...` también sirve.
 
 4. **Java.** Se probó con JDK 17, la versión del `pom.xml`. Spring Boot 3.3.3 soporta Java 17 a 22. Si el `java` por defecto es más nuevo:
    ```bash
