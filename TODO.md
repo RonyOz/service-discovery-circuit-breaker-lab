@@ -52,7 +52,9 @@ Todo en `fx-catalog-service`. Detalle y evidencia en `docs/parte2-resilience4j.m
 - [x] Configuración adecuada de propiedades en `application.properties`
 - [x] Circuit Breaker **y otros patrones de resiliencia** funcionando:
   - [x] `@Retry`: 3 intentos cada 500 ms antes del fallback; no reintenta con el circuito OPEN
-  - [ ] *(opcional, si quieren sumar)* `@RateLimiter` / `@Bulkhead` / `@TimeLimiter`
+  - [x] `@RateLimiter`: 5 llamadas/s; el exceso recibe fallback al instante sin abrir el circuito
+  - [x] `@Bulkhead` (thread pool): 2 llamadas simultáneas + 1 en cola; aísla a course de los hilos de Tomcat
+  - [x] `@TimeLimiter`: corta a los 2 s; endpoints devuelven `CompletableFuture` y `RestTemplate` con `readTimeout` (sección 3.2 del doc)
 - [x] Explicación de cómo **Resilience4j** mejora la resiliencia → sección 4 del doc
 - [x] Explicación de cómo **Hystrix** mejora la resiliencia + comparación → sección 6 del doc
 - [ ] Demostración **en vivo** (guion en la sección 7 del doc)
