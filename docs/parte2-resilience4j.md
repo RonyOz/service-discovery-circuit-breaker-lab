@@ -2,7 +2,7 @@
 
 > Criterio de calificación (60%): configuración de Resilience4j, fallbacks, anotaciones en el controlador, propiedades, demostración del Circuit Breaker y otros patrones de resiliencia, explicación de Resilience4j y de Hystrix.
 
-Estado: **implementada y verificada** el 2026-10-22 con JDK 17 (evidencia en la sección 5).
+Estado: **implementada y verificada** el 2026-10-22 con JDK 17 (evidencia en la sección 5). RateLimiter, Bulkhead y TimeLimiter agregados y verificados el 2026-10-25 (sección 3.2).
 
 ---
 
@@ -28,12 +28,16 @@ En un sistema real eso produce **fallas en cascada**: los hilos del consumidor q
     <artifactId>spring-boot-starter-aop</artifactId>   <!-- las anotaciones funcionan con aspectos -->
 </dependency>
 <dependency>
+    <groupId>io.github.resilience4j</groupId>
+    <artifactId>resilience4j-bulkhead</artifactId>   <!-- @Bulkhead: el starter NO lo incluye -->
+</dependency>
+<dependency>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-actuator</artifactId>  <!-- monitoreo (opcional del enunciado) -->
 </dependency>
 ```
 
-Las versiones las gestiona el BOM de Spring Cloud 2023.0.3 (Resilience4j 2.1.0).
+Las versiones las gestiona el BOM de Spring Cloud 2023.0.3 (Resilience4j 2.1.0). El starter ya trae `resilience4j-retry`, `-ratelimiter` y `-timelimiter`; `-bulkhead` hay que agregarlo a mano.
 
 ### 2.2 Propiedades — `fx-catalog-service/src/main/resources/application.properties`
 
@@ -49,6 +53,7 @@ Las versiones las gestiona el BOM de Spring Cloud 2023.0.3 (Resilience4j 2.1.0).
 | `permittedNumberOfCallsInHalfOpenState` | 3 | Llamadas de prueba en HALF_OPEN |
 | `registerHealthIndicator` | true | Publica el estado en `/actuator/health` |
 | `eventConsumerBufferSize` | 10 | Eventos guardados para `/actuator/circuitbreakerevents` |
+| `ignoreExceptions` | `RequestNotPermitted`, `BulkheadFullException` | Rechazos de nuestro propio RateLimiter/Bulkhead: no son fallas de course, no deben abrir el circuito |
 
 **Retry** (patrón adicional):
 
@@ -56,9 +61,25 @@ Las versiones las gestiona el BOM de Spring Cloud 2023.0.3 (Resilience4j 2.1.0).
 |---|---|---|
 | `maxAttempts` | 3 | 1 intento + 2 reintentos |
 | `waitDuration` | 500ms | Espera entre intentos |
-| `ignoreExceptions` | `CallNotPermittedException` | Si el circuito está OPEN, no reintenta: va directo al fallback |
+| `ignoreExceptions` | `CallNotPermittedException`, `RequestNotPermitted`, `BulkheadFullException` | Si una capa interna rechazó la llamada **sin intentarla** (circuito OPEN, límite de tasa, bulkhead lleno), no reintenta: va directo al fallback |
 
-**Actuator**: expone `health`, `circuitbreakers`, `circuitbreakerevents`, `retries` y `retryevents`.
+**RateLimiter**, **TimeLimiter** y **Bulkhead** (patrones adicionales, detalle en la sección 3.2):
+
+| Propiedad | Valor | Significado |
+|---|---|---|
+| `ratelimiter...limitForPeriod` | 5 | Máximo 5 llamadas a course por período |
+| `ratelimiter...limitRefreshPeriod` | 1s | Duración del período |
+| `ratelimiter...timeoutDuration` | 0 | Sin permiso, rechaza al instante (no hace esperar a la request) |
+| `ratelimiter...subscribeForEvents` | true | Publica eventos en `/actuator/ratelimiterevents` (por defecto viene apagado) |
+| `timelimiter...timeoutDuration` | 2s | Deja de esperar a course a los 2 s; cuenta como fallo para el circuito |
+| `thread-pool-bulkhead...coreThreadPoolSize` / `maxThreadPoolSize` | 2 / 2 | Máximo 2 llamadas simultáneas a course |
+| `thread-pool-bulkhead...queueCapacity` | 1 | 1 más en espera; la 4ª simultánea se rechaza |
+
+Los valores del Bulkhead y del RateLimiter son **chicos a propósito** para poder demostrarlos en local con `curl`. En producción se dimensionan según la capacidad real de course.
+
+**Timeouts del `RestTemplate`** (bean en `FutureXCourseCatalogApplication`): `connectTimeout=1s`, `readTimeout=3s`. Antes cada método hacía `new RestTemplate()` sin timeouts; ver por qué hacen falta en la sección 3.2.
+
+**Actuator**: expone `health`, `circuitbreakers`, `circuitbreakerevents`, `retries`, `retryevents`, `ratelimiters`, `ratelimiterevents`, `timelimiters`, `timelimiterevents`, `bulkheads` y `bulkheadevents`.
 
 ### 2.3 Anotaciones y fallbacks — `CatalogController.java`
 
@@ -68,12 +89,20 @@ Los 3 endpoints que llaman a `fx-course-service` quedan protegidos. Todos compar
 @RequestMapping("/catalog")
 @Retry(name = "courseService", fallbackMethod = "fallbackGetCatalog")
 @CircuitBreaker(name = "courseService")
-public String getCatalog() { /* código original sin cambios */ }
+@RateLimiter(name = "courseService")
+@TimeLimiter(name = "courseService")
+@Bulkhead(name = "courseService", type = Bulkhead.Type.THREADPOOL)
+public CompletableFuture<String> getCatalog() {
+    /* código original: Eureka + restTemplate.getForObject(...) */
+    return CompletableFuture.completedFuture("Our courses are "+courses);
+}
 
-public String fallbackGetCatalog(Exception ex) {
-    return("Fallback: Unable to retrieve course catalog ("+reason(ex)+")");
+public CompletableFuture<String> fallbackGetCatalog(Exception ex) {
+    return CompletableFuture.completedFuture("Fallback: Unable to retrieve course catalog ("+reason(ex)+")");
 }
 ```
+
+Los métodos devuelven `CompletableFuture<String>` porque `@TimeLimiter` lo exige (sección 3.2). Spring MVC lo resuelve solo: el cliente sigue recibiendo un `String`.
 
 | Endpoint | Fallback | Respuesta degradada |
 |---|---|---|
@@ -81,13 +110,21 @@ public String fallbackGetCatalog(Exception ex) {
 | `/catalog` | `fallbackGetCatalog` | `Fallback: Unable to retrieve course catalog (...)` |
 | `/firstcourse` | `fallbackGetSpecificCourse` | `Fallback: Unable to retrieve first course (...)` |
 
-El paréntesis indica el motivo: `retries exhausted: ResourceAccessException` (se intentó y falló) o `circuit OPEN, call not attempted` (el circuito cortó la llamada).
+El paréntesis indica el motivo:
 
-**Reglas del fallback:** mismo tipo de retorno que el método protegido (`String`), mismos parámetros (aquí ninguno) y la excepción como último parámetro. Debe estar en la misma clase.
+| Motivo | Quién lo produce | ¿Se llamó a course? |
+|---|---|---|
+| `retries exhausted: ResourceAccessException` | Retry, tras 3 intentos con course caído | Sí, 3 veces |
+| `retries exhausted: TimeoutException` | Retry, tras 3 intentos que superaron los 2 s del TimeLimiter | Sí, 3 veces |
+| `circuit OPEN, call not attempted` | CircuitBreaker | No |
+| `rate limit exceeded, call not attempted` | RateLimiter | No |
+| `bulkhead full, call not attempted` | Bulkhead | No |
 
-**Decisión de diseño: por qué el fallback va en `@Retry` y no en `@CircuitBreaker`.**
-Resilience4j aplica los aspectos en este orden: `Retry( CircuitBreaker( método ) )`.
-- Si el fallback estuviera en `@CircuitBreaker`, ese fallback "tragaría" la excepción y devolvería un String normal. Retry vería un éxito y **nunca reintentaría**.
+**Reglas del fallback:** mismo tipo de retorno que el método protegido (`CompletableFuture<String>`), mismos parámetros (aquí ninguno) y la excepción como último parámetro. Debe estar en la misma clase. En el camino asíncrono la excepción puede llegar envuelta en `CompletionException`; `reason()` la desenvuelve.
+
+**Decisión de diseño: por qué el fallback va en `@Retry` y no en otra anotación.**
+Resilience4j aplica los aspectos en este orden: `Retry( CircuitBreaker( RateLimiter( TimeLimiter( Bulkhead( método ) ) ) ) )`. Retry es la capa externa.
+- Si el fallback estuviera en `@CircuitBreaker` (o en cualquier capa interna), ese fallback "tragaría" la excepción y devolvería un String normal. Retry vería un éxito y **nunca reintentaría**.
 - Con el fallback en `@Retry`, cada intento fallido se registra en el circuito, y solo cuando se agotan los reintentos (o el circuito está OPEN) se devuelve la respuesta degradada.
 
 **Sobre `Resilience4JConfig` (paso 5 opcional del enunciado): incluida, con su alcance verificado.**
@@ -134,9 +171,9 @@ stateDiagram-v2
 **Configuración** (`resilience4j.retry.instances.courseService.*`):
 - `maxAttempts=3`: hasta 3 intentos en total (1 original + 2 reintentos).
 - `waitDuration=500ms`: espera fija entre intentos, para no martillar al servicio.
-- `ignoreExceptions=CallNotPermittedException`: si el circuito está OPEN, no reintenta.
+- `ignoreExceptions=CallNotPermittedException` (+ `RequestNotPermitted`, `BulkheadFullException`, sección 3.2): si una capa interna rechazó la llamada sin intentarla, no reintenta.
 
-Por defecto Retry reintenta ante **cualquier excepción**: conexión rechazada, timeout, un 500 de course y también los 4xx. No se filtró por tipo para mantener la demo simple.
+Fuera de esos rechazos, Retry reintenta ante **cualquier excepción**: conexión rechazada, `TimeoutException`, un 500 de course y también los 4xx. No se filtró más por tipo para mantener la demo simple.
 
 **Flujo de una request con course caído y el circuito CLOSED:**
 ```
@@ -203,6 +240,104 @@ Ejemplo real (course caído, una request):
 
 ---
 
+## 3.2 RateLimiter, Bulkhead y TimeLimiter (patrones 3, 4 y 5)
+
+Retry y Circuit Breaker reaccionan a un course **caído** (responde error). Estos tres cubren lo que falta: un course **lento** o **colgado**, y un catálogo que se protege a sí mismo de la sobrecarga.
+
+### La cadena completa
+
+```
+request
+  └─ Retry            reintenta fallas transitorias (fallback aquí)
+      └─ CircuitBreaker   corta si course falla seguido
+          └─ RateLimiter      máx. 5 llamadas/s a course
+              └─ TimeLimiter      deja de esperar a los 2 s
+                  └─ Bulkhead (thread pool)  máx. 2 simultáneas + 1 en cola
+                      └─ método: Eureka + RestTemplate → course
+```
+
+Es el orden **por defecto** de Resilience4j; en el código las anotaciones están escritas en ese mismo orden para que se lea igual.
+
+### RateLimiter: limitar la tasa de llamadas
+
+**Qué resuelve.** Protege a course (y al catálogo) de picos: no importa cuántas requests lleguen, a course le llegan como máximo 5 por segundo. Las que sobran reciben el fallback al instante en vez de encolarse.
+
+**Decisión: `timeoutDuration=0`.** Si no hay permiso, rechaza al momento. Con un valor > 0 la request esperaría un permiso libre, ocupando un hilo de Tomcat durante esa espera.
+
+**Flujo** (course sano, 7 requests seguidas en el mismo segundo): las 5 primeras pasan, la 6ª y 7ª reciben `rate limit exceeded` en ~3 ms. El circuito sigue **CLOSED**.
+
+### Bulkhead: aislar recursos
+
+**Qué resuelve.** El nombre viene de los compartimentos estancos de un barco: si uno se inunda, el barco no se hunde. Aquí: si course se cuelga, solo se bloquean los 2 hilos del pool dedicado a course; los hilos de Tomcat quedan libres y el resto del catálogo (Actuator, otros endpoints) sigue respondiendo. Sin Bulkhead, un course colgado puede agotar los 200 hilos de Tomcat y tumbar al catálogo entero. Es la falla en cascada de la sección 1.
+
+**Decisión: tipo `THREADPOOL` y no `SEMAPHORE` (el default).** Un semáforo solo limita la concurrencia y la llamada corre en el hilo de Tomcat. El thread pool además ejecuta la llamada **en otro hilo**, que es lo que necesita TimeLimiter (ver abajo).
+
+**Capacidad:** 2 hilos + 1 lugar en cola = 3 llamadas en vuelo. La 4ª simultánea recibe `bulkhead full` al instante.
+
+### TimeLimiter: cortar llamadas lentas
+
+**Qué resuelve.** Un servicio **lento** es peor que uno caído: un servicio caído rechaza la conexión en milisegundos, pero uno colgado deja a la request esperando indefinidamente. TimeLimiter pone un tope de 2 s; pasado ese tiempo lanza `TimeoutException`, que cuenta como fallo para el circuito y para Retry.
+
+**Decisión: los métodos devuelven `CompletableFuture`.** TimeLimiter solo puede "dejar de esperar" algo que corre en otro hilo. Si el método fuera síncrono, la llamada ya habría terminado (o seguiría bloqueada en el mismo hilo) antes de que TimeLimiter pudiera hacer nada. Por eso Resilience4j exige `CompletionStage` como tipo de retorno, y por eso el Bulkhead es THREADPOOL: ejecuta el cuerpo del método en su pool y devuelve el future que TimeLimiter vigila.
+
+**Decisión: `readTimeout=3s` en el `RestTemplate`.** TimeLimiter deja de esperar, pero **no puede interrumpir** una lectura de socket bloqueada: el hilo del Bulkhead seguiría colgado. Sin `readTimeout`, cada timeout dejaría un hilo del pool ocupado para siempre y el Bulkhead quedaría lleno de forma permanente. El `readTimeout` (mayor que los 2 s del TimeLimiter, para no pisarlo) libera el hilo 1 s después.
+
+### Por qué CircuitBreaker y Retry ignoran `RequestNotPermitted` y `BulkheadFullException`
+
+Esos rechazos los genera **nuestro propio** throttling; course ni siquiera fue llamado.
+- Si el circuito los contara como fallos, un pico de tráfico **con course sano** abriría el circuito y cortaría a todos los usuarios.
+- Si Retry los reintentara, metería todavía más carga justo cuando estamos saturados.
+
+### Evidencia (ejecución real, 2026-10-25)
+
+Para simular un course **colgado** (no caído) se congeló el proceso con `kill -STOP <pid>`: el kernel sigue aceptando conexiones, pero nadie responde. `kill -CONT <pid>` lo reanuda.
+
+**1) RateLimiter: course sano, 7 requests seguidas**
+```
+0.0109s Our courses are [{"courseid":1,"coursename":"Spring Boot Fundamentals",...
+0.0093s Our courses are [...]
+0.0090s Our courses are [...]
+0.0092s Our courses are [...]
+0.0094s Our courses are [...]
+0.0054s Fallback: Unable to retrieve course catalog (rate limit exceeded, call not attempted)
+0.0033s Fallback: Unable to retrieve course catalog (rate limit exceeded, call not attempted)
+GET /actuator/ratelimiterevents → 6 SUCCESSFUL_ACQUIRE, 2 FAILED_ACQUIRE
+CB state=CLOSED   (los rechazos no cuentan como fallos)
+```
+
+**2) Bulkhead: course congelado, 5 requests en paralelo**
+```
+0.004s  Fallback: ... (bulkhead full, call not attempted)     ← 4ª y 5ª: rechazadas al instante
+0.004s  Fallback: ... (bulkhead full, call not attempted)
+2.505s  Fallback: ... (circuit OPEN, call not attempted)      ← 3 aceptadas: TIMEOUT a los 2 s
+2.505s  Fallback: ... (circuit OPEN, call not attempted)         → el circuito se abre
+2.506s  Fallback: ... (circuit OPEN, call not attempted)         → Retry (500 ms) encuentra OPEN
+GET /actuator/bulkheadevents → CALL_REJECTED x2
+```
+Las 3 llamadas aceptadas esperaron 2 s (TimeLimiter), los 3 timeouts abrieron el circuito y el reintento a los 500 ms ya lo encontró OPEN: tres patrones actuando en una sola ráfaga.
+
+**3) TimeLimiter + Retry: course congelado, circuito en HALF_OPEN, 1 request**
+```
+7.008s  Fallback: Unable to retrieve course catalog (retries exhausted: TimeoutException)
+GET /actuator/timelimiterevents:
+  12:40:58.003 TIMEOUT    ← intento 1 (t=2.0s)
+  12:41:00.505 TIMEOUT    ← intento 2 (t=4.5s = 2.0 + 0.5 espera + 2.0)
+  12:41:03.006 TIMEOUT    ← intento 3 (t=7.0s)
+CB: HALF_OPEN → OPEN
+```
+Sin TimeLimiter (y con el `RestTemplate` original sin timeouts) esa request habría quedado colgada indefinidamente.
+
+**4) Recuperación:** `kill -CONT` → a los ~6 s `/catalog`, `/firstcourse` y `/` responden normal, circuito **CLOSED**.
+
+**5) Regresión del flujo original** (course apagado, connection refused): sin cambios respecto a la sección 5.
+```
+1.014s  Fallback: ... (retries exhausted: ResourceAccessException)
+1.016s  Fallback: ... (circuit OPEN, call not attempted)     ← se abrió a mitad de la request
+0.003s  Fallback: ... (circuit OPEN, call not attempted)
+```
+
+---
+
 ## 4. Cómo Resilience4j mejora la resiliencia del sistema
 
 1. **Evita fallas en cascada.** Con el circuito OPEN, el catálogo no gasta hilos ni conexiones en un servicio muerto, así que sigue sano y atendiendo.
@@ -212,15 +347,18 @@ Ejemplo real (course caído, una request):
 5. **Recuperación automática.** HALF_OPEN prueba solo y cierra el circuito cuando course vuelve, sin reiniciar nada.
 6. **Tolera fallas transitorias** con Retry: un error momentáneo de red no llega al usuario.
 7. **Observabilidad.** El estado, la tasa de fallos y los eventos se ven en Actuator.
-8. **Ligero y modular.** Cada patrón es un módulo independiente que se configura por propiedades y se aplica con una anotación:
+8. **Tolera servicios lentos** con TimeLimiter: nadie espera más de 2 s a course.
+9. **Aísla recursos** con Bulkhead: un course colgado solo bloquea su pool de 2 hilos, no los de Tomcat.
+10. **Controla la carga** con RateLimiter: un pico de tráfico no se traslada completo a course.
+11. **Ligero y modular.** Cada patrón es un módulo independiente que se configura por propiedades y se aplica con una anotación:
 
 | Módulo | Anotación | Para qué |
 |---|---|---|
 | CircuitBreaker | `@CircuitBreaker` | Cortar llamadas a un servicio que falla ✅ *implementado* |
 | Retry | `@Retry` | Reintentar fallas transitorias ✅ *implementado* |
-| RateLimiter | `@RateLimiter` | Limitar llamadas por período |
-| Bulkhead | `@Bulkhead` | Limitar llamadas concurrentes (aislar recursos) |
-| TimeLimiter | `@TimeLimiter` | Cortar llamadas lentas (requiere `CompletableFuture`) |
+| RateLimiter | `@RateLimiter` | Limitar llamadas por período ✅ *implementado* |
+| Bulkhead | `@Bulkhead` | Limitar llamadas concurrentes (aislar recursos) ✅ *implementado (thread pool)* |
+| TimeLimiter | `@TimeLimiter` | Cortar llamadas lentas (requiere `CompletableFuture`) ✅ *implementado* |
 
 ---
 
@@ -328,3 +466,23 @@ Con los 3 servicios arriba (ver el guion de la Parte 1):
 6. Ver `/actuator/health` → `courseService.state` = **OPEN**. El componente `circuitBreakers` queda `UNKNOWN` y el status global sigue `UP`: el catálogo está sano, solo su dependencia no. Luego `/actuator/circuitbreakerevents` → las transiciones.
 7. Volver a levantar `fx-course-service` y esperar ~20-30 s (re-registro en Eureka).
 8. Recargar `/catalog` → respuesta normal; `/actuator/health` → **CLOSED**.
+
+**RateLimiter, Bulkhead y TimeLimiter** (con los 3 servicios arriba y el circuito CLOSED):
+
+9. **RateLimiter**: ráfaga de 7 requests → 5 normales y 2 `rate limit exceeded`. Luego `/actuator/ratelimiterevents`.
+   ```bash
+   for i in $(seq 1 7); do curl -s localhost:8002/catalog | head -c 80; echo; done
+   ```
+10. Congelar course para simularlo **colgado**:
+    ```bash
+    kill -STOP $(pgrep -f FutureXCourseApp)
+    ```
+11. **Bulkhead**: 5 requests en paralelo → 2 `bulkhead full` al instante; las otras 3 cortan a los ~2.5 s. Luego `/actuator/bulkheadevents` (`CALL_REJECTED`).
+    ```bash
+    for i in $(seq 1 5); do (curl -s -w " %{time_total}s\n" localhost:8002/catalog) & done; wait
+    ```
+12. **TimeLimiter**: esperar ~6 s (circuito en HALF_OPEN) y pedir `/catalog` una vez → ~7 s y `retries exhausted: TimeoutException`. Luego `/actuator/timelimiterevents` (3 `TIMEOUT`).
+13. Descongelar course y ver la recuperación (~6 s, circuito CLOSED):
+    ```bash
+    kill -CONT $(pgrep -f FutureXCourseApp)
+    ```
