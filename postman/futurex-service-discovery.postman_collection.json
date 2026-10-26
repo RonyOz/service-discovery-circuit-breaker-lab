@@ -1,0 +1,276 @@
+{
+  "info": {
+    "_postman_id": "futurex-service-discovery",
+    "name": "FutureX Service Discovery and Resilience",
+    "description": "Pruebas funcionales para Eureka, Course, Catalog y Resilience4j. Selecciona un entorno FutureX antes de ejecutar.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Eureka",
+      "item": [
+        {
+          "name": "Eureka dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{eurekaUrl}}/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Eureka responde 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Registered applications",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{eurekaUrl}}/eureka/apps"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('El registro Eureka responde 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Eureka contiene los servicios esperados', function () {",
+                  "    const body = pm.response.text();",
+                  "    pm.expect(body).to.include('FX-COURSE-SERVICE');",
+                  "    pm.expect(body).to.include('FX-CATALOG-SERVICE');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Course service",
+      "item": [
+        {
+          "name": "Home",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courseUrl}}/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Course home responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List courses",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courseUrl}}/courses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('La lista de cursos responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('La respuesta contiene cursos', function () {",
+                  "    const courses = pm.response.json();",
+                  "    pm.expect(courses).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get first course",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courseUrl}}/1"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('El primer curso responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('El curso tiene nombre y autor', function () {",
+                  "    const course = pm.response.json();",
+                  "    pm.expect(course.coursename).to.be.a('string');",
+                  "    pm.expect(course.author).to.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Catalog service",
+      "item": [
+        {
+          "name": "Catalog home",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Catalog home responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('La respuesta contiene el catálogo', function () { pm.expect(pm.response.text()).to.include('FutureX Course Catalog'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Catalog courses",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/catalog"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Catalog responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Catalog devuelve cursos o fallback controlado', function () {",
+                  "    const body = pm.response.text();",
+                  "    pm.expect(body).to.satisfy(function (value) {",
+                  "        return value.includes('Our courses are') || value.includes('Fallback:');",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "First catalog course",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/firstcourse"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('First course responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('La respuesta normal o fallback está controlada', function () {",
+                  "    const body = pm.response.text();",
+                  "    pm.expect(body).to.satisfy(function (value) {",
+                  "        return value.includes('Our first course is') || value.includes('Fallback:');",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Circuit breaker health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Health responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Health expone el componente de circuit breakers', function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('components');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Circuit breaker events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/circuitbreakerevents"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Los eventos del circuit breaker responden 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fallback after stopping course (manual scenario)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Detén el contenedor course-service con `docker compose stop course-service` y ejecuta esta request varias veces. Debe devolver HTTP 200 con `Fallback:`; luego inicia el servicio y verifica la recuperación.",
+            "url": "{{catalogUrl}}/catalog"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('El catálogo sigue respondiendo durante la falla', function () { pm.response.to.have.status(200); });",
+                  "pm.test('La respuesta demuestra fallback', function () { pm.expect(pm.response.text()).to.include('Fallback:'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

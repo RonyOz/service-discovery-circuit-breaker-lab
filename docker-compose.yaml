@@ -1,0 +1,54 @@
+services:
+  discovery-server:
+    build:
+      context: ./fx-discovery-server
+    image: service-discovery-lab/discovery-server:latest
+    container_name: discovery-server
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8761/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  course-service:
+    build:
+      context: ./fx-course-service
+    image: service-discovery-lab/course-service:latest
+    container_name: course-service
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+    ports:
+      - "8001:8001"
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  catalog-service:
+    build:
+      context: ./fx-catalog-service
+    image: service-discovery-lab/catalog-service:latest
+    container_name: catalog-service
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+    ports:
+      - "8002:8002"
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      course-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8002/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
