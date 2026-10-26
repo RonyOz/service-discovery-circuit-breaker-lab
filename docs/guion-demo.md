@@ -18,6 +18,8 @@ Postman:
 2. Importar `postman/futurex-docker.postman_environment.json` y `postman/futurex-local.postman_environment.json`.
 3. Seleccionar el entorno **FutureX - Docker Compose** (arriba a la derecha).
 
+La colección tiene 4 carpetas: **Eureka**, **Course service** (CRUD completo: GET/POST/DELETE, sin resiliencia — es la línea base), **Catalog service** (los 3 endpoints del consumidor + el escenario de fallback) y **Resilience monitoring** (evidencia Actuator de los 5 patrones: circuit breaker, retry, rate limiter, bulkhead, time limiter).
+
 Tener a la mano, en pestañas separadas:
 - `http://localhost:8761` (panel de Eureka)
 - Postman con la colección abierta
@@ -46,7 +48,7 @@ Mostrar el diagrama de secuencia de `docs/parte1-service-discovery.md` (sección
 ### Demo en vivo
 1. Abrir `http://localhost:8761` → mostrar `FX-COURSE-SERVICE` y `FX-CATALOG-SERVICE` en **UP**.
 2. En Postman, correr la carpeta **Eureka** (2 requests) → deben pasar los tests automáticos.
-3. Correr la carpeta **Course service** (Home, List courses, Get first course).
+3. Correr la carpeta **Course service** completa: primero el CRUD de lectura (Home, List courses, Get first course) y luego el CRUD de escritura (`Create demo course`, `Get demo course (after create)`, `Delete demo course`, `Get demo course (after delete)` — esta última falla a propósito con 500, porque `course-service` no tiene ningún manejo de errores ni resiliencia: es la línea base que contrasta con la Parte 2).
 4. Correr la carpeta **Catalog service** → primeras 3 requests (`Catalog home`, `Catalog courses`, `First catalog course`): todas en verde, porque el catálogo encontró a `course` vía Eureka.
 5. Abrir `CatalogController.java` y señalar las 3 líneas clave (sección 2.3 del doc): `client.getNextServerFromEureka(...)` → `getHomePageUrl()` → `restTemplate.getForObject(...)`.
 
@@ -82,16 +84,16 @@ Retry → CircuitBreaker → RateLimiter → TimeLimiter → Bulkhead(thread poo
 
 ### Demo en vivo — Circuit Breaker
 
-1. Postman → **Catalog service → Circuit breaker health**: mostrar `state: CLOSED`.
+1. Postman → **Resilience monitoring → Circuit breaker health**: mostrar `state: CLOSED`.
 2. Terminal:
    ```bash
    docker compose stop course-service
    ```
-3. Postman → correr **"Fallback after stopping course (manual scenario)"** 2-3 veces seguidas:
+3. Postman → correr **Catalog service → "Fallback after stopping course (manual scenario)"** 2-3 veces seguidas:
    - 1ª vez: tarda ~1-4 s (Retry agotando 3 intentos) y responde `Fallback: ... (retries exhausted: ...)`.
    - 2ª/3ª vez: responde **instantáneo** con `Fallback: ... (circuit OPEN, call not attempted)`.
-4. Postman → **Circuit breaker health**: `state: OPEN`.
-5. Postman → **Circuit breaker events**: mostrar las transiciones (`NOT_PERMITTED`, etc.).
+4. Postman → **Resilience monitoring → Circuit breaker health**: `state: OPEN`.
+5. Postman → **Resilience monitoring → Circuit breaker events** (y, si quieres más detalle, **Retries** / **Retry events**): mostrar las transiciones (`NOT_PERMITTED`, `RETRY`, `ERROR`, etc.).
 6. Terminal:
    ```bash
    docker compose start course-service
@@ -101,14 +103,16 @@ Retry → CircuitBreaker → RateLimiter → TimeLimiter → Bulkhead(thread poo
 
 ### (Opcional, si hay tiempo) RateLimiter, Bulkhead, TimeLimiter
 
-Con los 3 servicios sanos:
+Postman no dispara estas ráfagas por sí solo: ejecuta las requests una por una, y estos dos patrones necesitan concurrencia real en el mismo segundo. Dispara la ráfaga desde una terminal y usa Postman solo para ver la evidencia resultante:
 
 ```bash
-# RateLimiter: 5 pasan, 2 reciben fallback instantáneo
+# RateLimiter: con los 3 servicios sanos, 5 pasan y 2 reciben fallback instantáneo
 for i in $(seq 1 7); do curl -s localhost:8002/catalog | head -c 60; echo; done
 ```
 
-Explicar con `docs/parte2-resilience4j.md` sección 3.2 si preguntan por Bulkhead/TimeLimiter (requieren congelar el proceso con `kill -STOP`, más difícil de mostrar en contenedores — mejor remitir a la evidencia ya documentada con capturas/logs reales).
+Después, Postman → **Resilience monitoring → Rate limiter events**: deben verse `SUCCESSFUL_ACQUIRE` y, si la ráfaga fue rápida, algún `FAILED_ACQUIRE`.
+
+Explicar con `docs/parte2-resilience4j.md` sección 3.2 si preguntan por Bulkhead/TimeLimiter (requieren congelar el proceso con `kill -STOP`, más difícil de mostrar en contenedores — mejor remitir a la evidencia ya documentada con capturas/logs reales, y usar **Resilience monitoring → Bulkhead events / Time limiter events** solo para confirmar que los endpoints están expuestos).
 
 ---
 
@@ -128,3 +132,4 @@ Explicar con `docs/parte2-resilience4j.md` sección 3.2 si preguntan por Bulkhea
 | ¿Por qué el fallback está en `@Retry` y no en `@CircuitBreaker`? | Orden de aspectos: si estuviera más adentro, "tragaría" el error antes de que Retry lo viera (parte2 §2.3). |
 | ¿Por qué Bulkhead es thread-pool y no semáforo? | TimeLimiter exige que la llamada corra en otro hilo para poder "dejar de esperarla" (parte2 §3.2). |
 | ¿Qué pasa si el circuito se abre a mitad de una ráfaga? | Se verificó: el circuito puede abrirse durante los reintentos de la propia request que lo dispara (parte2 §3.1, evidencia real). |
+| ¿Hay endpoints POST o DELETE, o todo es GET? | Sí: `course-service` tiene `POST /courses` y `DELETE /{id}` (CRUD completo sobre su base H2). `catalog-service` nunca los llama — solo hace 3 GET salientes — así que esos dos quedan fuera de Resilience4j a propósito: la resiliencia del taller protege la dependencia saliente de catalog, no la API propia de course. |

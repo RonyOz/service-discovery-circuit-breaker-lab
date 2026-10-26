@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "futurex-service-discovery",
     "name": "FutureX Service Discovery and Resilience",
-    "description": "Pruebas funcionales para Eureka, Course, Catalog y Resilience4j. Selecciona un entorno FutureX antes de ejecutar.",
+    "description": "Pruebas funcionales para Eureka, Course, Catalog y Resilience4j. Selecciona un entorno FutureX antes de ejecutar. Carpetas: Eureka (registro) -> Course service (CRUD completo: GET/POST/DELETE) -> Catalog service (consumidor, incluye el escenario de fallback) -> Resilience monitoring (evidencia de los 5 patrones vía Actuator).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -65,6 +65,7 @@
     },
     {
       "name": "Course service",
+      "description": "Servicio proveedor. Expone CRUD completo (GET, POST, DELETE) directamente sobre su base H2. Ninguno de estos endpoints tiene Resilience4j: la resiliencia de este taller protege la llamada SALIENTE de catalog hacia course, no la API de course en sí.",
       "item": [
         {
           "name": "Home",
@@ -131,11 +132,107 @@
               }
             }
           ]
+        },
+        {
+          "name": "Create demo course (POST)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"courseid\": {{demoCourseId}},\n  \"coursename\": \"Demo Resilience Course\",\n  \"author\": \"Postman Demo\"\n}"
+            },
+            "url": "{{courseUrl}}/courses",
+            "description": "Usa un id fuera del rango de los 3 cursos de ejemplo (1-3) para no pisarlos. courseid no es autogenerado: lo definimos en el body (ver Course.java, @Id sin @GeneratedValue)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Crear curso responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get demo course (after create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courseUrl}}/{{demoCourseId}}",
+            "description": "Confirma que el POST anterior realmente persistió el curso en la base H2."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('El curso demo existe tras crearlo', function () { pm.response.to.have.status(200); });",
+                  "pm.test('El curso demo tiene los datos enviados', function () {",
+                  "    const course = pm.response.json();",
+                  "    pm.expect(course.coursename).to.eql('Demo Resilience Course');",
+                  "    pm.expect(course.author).to.eql('Postman Demo');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete demo course (DELETE)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{courseUrl}}/{{demoCourseId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Borrar curso responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get demo course (after delete, expected error)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courseUrl}}/{{demoCourseId}}",
+            "description": "A propósito espera un error: course-service usa courseRepository.getOne(id) sin manejo de curso inexistente, así que un id borrado produce HTTP 500 (no 404). Es intencional dejarlo así: este CRUD no tiene ninguna capa de resiliencia ni de manejo de errores -- a diferencia de catalog, que sí la tiene para SU llamada saliente a course. Es un buen contraste para la demo."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('El curso ya no existe (500, sin manejo de errores en course-service)', function () {",
+                  "    pm.response.to.have.status(500);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         }
       ]
     },
     {
       "name": "Catalog service",
+      "description": "Servicio consumidor. Descubre a course vía Eureka y protege la llamada con Resilience4j (Retry, CircuitBreaker, RateLimiter, TimeLimiter, Bulkhead).",
       "item": [
         {
           "name": "Catalog home",
@@ -208,6 +305,33 @@
           ]
         },
         {
+          "name": "Fallback after stopping course (manual scenario)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Detén el contenedor course-service con `docker compose stop course-service` y ejecuta esta request varias veces. Debe devolver HTTP 200 con `Fallback:`; luego inicia el servicio y verifica la recuperación. Después de correrla, revisa la carpeta 'Resilience monitoring' para ver la evidencia (estado del circuito y eventos).",
+            "url": "{{catalogUrl}}/catalog"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('El catálogo sigue respondiendo durante la falla', function () { pm.response.to.have.status(200); });",
+                  "pm.test('La respuesta demuestra fallback', function () { pm.expect(pm.response.text()).to.include('Fallback:'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Resilience monitoring",
+      "description": "Evidencia, vía Spring Actuator, de los 5 patrones de Resilience4j aplicados en catalog-service: Circuit Breaker, Retry, RateLimiter, TimeLimiter y Bulkhead. Corre esta carpeta completa después de cualquiera de los escenarios manuales (apagar/encender course, o las ráfagas de curl del guion de demo en docs/guion-demo.md) para ver el estado y los eventos resultantes.",
+      "item": [
+        {
           "name": "Circuit breaker health",
           "request": {
             "method": "GET",
@@ -250,20 +374,159 @@
           ]
         },
         {
-          "name": "Fallback after stopping course (manual scenario)",
+          "name": "Retries",
           "request": {
             "method": "GET",
             "header": [],
-            "description": "Detén el contenedor course-service con `docker compose stop course-service` y ejecuta esta request varias veces. Debe devolver HTTP 200 con `Fallback:`; luego inicia el servicio y verifica la recuperación.",
-            "url": "{{catalogUrl}}/catalog"
+            "url": "{{catalogUrl}}/actuator/retries"
           },
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('El catálogo sigue respondiendo durante la falla', function () { pm.response.to.have.status(200); });",
-                  "pm.test('La respuesta demuestra fallback', function () { pm.expect(pm.response.text()).to.include('Fallback:'); });"
+                  "pm.test('Retries responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Expone la instancia courseService', function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.retries).to.include('courseService');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/retryevents",
+            "description": "Tras provocar una falla deberías ver eventos RETRY (reintento) y ERROR (intentos agotados) o IGNORED_ERROR (si el circuito ya estaba OPEN)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Retry events responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rate limiters",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/ratelimiters"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Rate limiters responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rate limiter events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/ratelimiterevents",
+            "description": "Para generar FAILED_ACQUIRE necesitas más de 5 llamadas en el mismo segundo. Postman ejecuta las requests una por una (no en paralelo), así que para evidenciar el rechazo usa la ráfaga de curl del guion de demo (docs/guion-demo.md, sección opcional) y luego vuelve a correr esta request para ver los eventos."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Rate limiter events responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bulkheads",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/bulkheads"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Bulkheads responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bulkhead events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/bulkheadevents",
+            "description": "Para ver CALL_REJECTED necesitas más de 3 llamadas simultáneas (2 hilos + 1 en cola) mientras course está colgado (kill -STOP), no simplemente caído. Es un escenario de terminal, igual que en docs/parte2-resilience4j.md sección 3.2; esta request solo muestra la evidencia resultante."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Bulkhead events responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Time limiters",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/timelimiters"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Time limiters responde 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Time limiter events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{catalogUrl}}/actuator/timelimiterevents",
+            "description": "Muestra eventos TIMEOUT cuando course tarda más de 2s en responder (course colgado con kill -STOP, no apagado)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Time limiter events responde 200', function () { pm.response.to.have.status(200); });"
                 ],
                 "type": "text/javascript"
               }

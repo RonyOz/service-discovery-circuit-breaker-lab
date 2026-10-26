@@ -40,19 +40,28 @@ Importar:
 - `postman/futurex-local.postman_environment.json` para ejecución manual con los tres procesos locales.
 - `postman/futurex-docker.postman_environment.json` para ejecución con Compose.
 
-Ejecutar primero las carpetas `Eureka`, `Course service` y `Catalog service`. La request `Fallback after stopping course (manual scenario)` requiere:
+La colección tiene 4 carpetas:
+
+- **Eureka**: panel y registro de aplicaciones.
+- **Course service**: CRUD completo del proveedor (GET, POST, DELETE) — sin resiliencia, es la línea base de la Parte 1.
+- **Catalog service**: los 3 endpoints del consumidor y el escenario manual de fallback.
+- **Resilience monitoring**: evidencia de los 5 patrones de Resilience4j vía Actuator (circuit breaker, retry, rate limiter, bulkhead, time limiter — estado y eventos).
+
+Ejecutar primero `Eureka`, `Course service` y `Catalog service`. La request `Fallback after stopping course (manual scenario)` requiere:
 
 ```bash
 docker compose stop course-service
 ```
 
-Después de ejecutar varias veces `/catalog`, consultar `Circuit breaker health` y `Circuit breaker events`. Para comprobar recuperación:
+Después de ejecutar varias veces `/catalog`, correr toda la carpeta `Resilience monitoring` para ver el estado del circuito y sus eventos. Para comprobar recuperación:
 
 ```bash
 docker compose start course-service
 ```
 
-Esperar a que vuelva a registrarse en Eureka y repetir las requests normales del catálogo.
+Esperar a que vuelva a registrarse en Eureka, repetir las requests normales del catálogo y volver a correr `Resilience monitoring`.
+
+RateLimiter y Bulkhead necesitan concurrencia real (varias llamadas en el mismo segundo), que Postman no genera porque ejecuta las requests una por una. Para esos dos patrones, dispara la ráfaga desde una terminal (ver `docs/guion-demo.md`) y después usa las requests de `Resilience monitoring` para ver los eventos resultantes.
 
 ## Ejecución local sin Docker
 
